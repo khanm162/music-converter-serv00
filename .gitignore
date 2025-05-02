@@ -1,0 +1,6 @@
+# Ignore sensitive files
+youtube_cookies.txt
+youtube_cookies.json
+cookies.b64
+temp_audio/*
+*.mp3
