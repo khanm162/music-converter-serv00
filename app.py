@@ -9,15 +9,14 @@ import logging
 import tempfile
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})  # Allow Shopify front end
+CORS(app, resources={r"/api/*": {"origins": "https://hqffhk-1j.myshopify.com"}})  # Restrict to Shopify domain
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Folder for temporary audio files
 TEMP_DIR = "temp_audio"
-if not os.path.exists(TEMP_DIR):
-    os.makedirs(TEMP_DIR)
+os.makedirs(TEMP_DIR, exist_ok=True)  # Ensure directory exists, safe for Heroku
 
 # Function to convert audio from 440Hz to 432Hz
 def pitch_shift_audio(input_path, output_path):
@@ -52,6 +51,7 @@ def convert_audio():
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': original_file.replace('.mp3', ''),  # yt-dlp adds extension
+            'cookiefile': 'youtube_cookies.txt',  # Use cookies for authentication
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -129,6 +129,21 @@ def share_audio(file_id):
         return jsonify({'success': True, 'shareUrl': share_url}), 200
     except Exception as e:
         app.logger.error(f"Error in share_audio: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Cleanup endpoint
+@app.route('/api/cleanup/<file_id>', methods=['DELETE'])
+def cleanup_audio(file_id):
+    try:
+        original_file = os.path.join(TEMP_DIR, f"{file_id}_original.mp3")
+        converted_file = os.path.join(TEMP_DIR, f"{file_id}_432hz.mp3")
+        for file_path in [original_file, converted_file]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                app.logger.debug(f"Deleted {file_path}")
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        app.logger.error(f"Error in cleanup_audio: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
