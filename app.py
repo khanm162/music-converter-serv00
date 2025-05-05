@@ -12,13 +12,17 @@ import yt_dlp
 
 # Setup
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})  # Allow all origins for development
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = "temp_audio"
+# Use /tmp for temporary files on Railway
+TEMP_DIR = "/tmp/temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Use the PORT environment variable for Railway
+port = int(os.getenv("PORT", 8080))
 
 def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
@@ -46,7 +50,9 @@ def download_audio_from_youtube(url):
             'extract_flat': False,
         }
 
+        logger.info(f"yt-dlp options: {ydl_opts}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logger.info("Starting download with yt-dlp...")
             info = ydl.extract_info(url, download=True)
             title = info.get('title', 'unknown_title')
             sanitized_title = secure_filename(title)
@@ -56,6 +62,7 @@ def download_audio_from_youtube(url):
             logger.error(f"Downloaded file not found: {original_file_path}")
             raise Exception("Downloaded file not found")
 
+        logger.info(f"Download successful. File saved at: {original_file_path}")
         return {
             "audio_id": audio_id,
             "original_path": original_file_path,
@@ -65,10 +72,13 @@ def download_audio_from_youtube(url):
         }
 
     except yt_dlp.utils.DownloadError as e:
-        logger.error(f"yt-dlp download error: {e}")
+        error_msg = str(e)
+        logger.error(f"yt-dlp download error: {error_msg}")
+        if "player response" in error_msg.lower():
+            return {"error": "Unable to access this YouTube video. It may be restricted or unavailable."}
         return None
     except Exception as e:
-        logger.error(f"Unexpected error downloading audio: {e}")
+        logger.error(f"Unexpected error downloading audio: {str(e)}")
         return None
 
 def convert_to_432hz(input_path, output_path):
@@ -80,6 +90,7 @@ def convert_to_432hz(input_path, output_path):
         ]
         logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
         subprocess.run(cmd, check=True, capture_output=True, text=True)
+        logger.info(f"Conversion to 432Hz successful. Output saved at: {output_path}")
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"FFmpeg conversion error: {e.stderr}")
@@ -102,9 +113,12 @@ def convert_audio():
     if not youtube_url or not validate_youtube_url(youtube_url):
         return jsonify({"success": False, "error": "Invalid or missing YouTube URL"}), 400
 
+    logger.info(f"Received request to convert YouTube URL: {youtube_url}")
     result = download_audio_from_youtube(youtube_url)
     if not result:
         return jsonify({"success": False, "error": "Failed to process YouTube video"}), 500
+    if "error" in result:
+        return jsonify({"success": False, "error": result["error"]}), 400
 
     if not convert_to_432hz(result["original_path"], result["converted_path"]):
         cleanup_files(result["original_path"])
@@ -189,3 +203,6 @@ def cleanup_temp_files(exception=None):
                     logger.info(f"Deleted old file: {file_path}")
             except Exception as e:
                 logger.warning(f"Failed to delete old file {file_path}: {e}")
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=port)
