@@ -1,13 +1,13 @@
 # fly.toml file for music-converter app
-     app = "music-converter"
-     primary_region = "bom"
+      app = "music-converter-2"
+ primary_region = "bom"
 
-     [build]
-       dockerfile = "Dockerfile"
+ [build]
+   dockerfile = "Dockerfile"
 
-     [http_service]
-       internal_port = 8080
-       force_https = true
-       auto_stop_machines = true
-       auto_start_machines = true
-       min_machines_running = 0
+ [http_service]
+   internal_port = 8080
+   force_https = true
+   auto_stop_machines = true
+   auto_start_machines = true
+   min_machines_running = 0
