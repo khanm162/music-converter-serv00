@@ -4,7 +4,7 @@ import subprocess
 import logging
 import re
 import time
-import signal
+import threading
 from flask import Flask, request, send_file, jsonify, url_for
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
@@ -53,8 +53,26 @@ class NoSaveCookiesYDL(YoutubeDL):
 class TimeoutException(Exception):
     pass
 
-def timeout_handler(signum, frame):
-    raise TimeoutException("Operation timed out")
+def timeout_wrapper(func, timeout_duration, error_message):
+    result = [None]
+    exception = [None]
+    
+    def target():
+        try:
+            result[0] = func()
+        except Exception as e:
+            exception[0] = e
+    
+    thread = threading.Thread(target=target)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout_duration)
+    
+    if thread.is_alive():
+        raise TimeoutException(error_message)
+    if exception[0]:
+        raise exception[0]
+    return result[0]
 
 def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
@@ -84,15 +102,11 @@ def download_audio_from_youtube(url):
         logger.debug(f"yt-dlp extract info options: {ydl_opts_info}")
 
         with NoSaveCookiesYDL(ydl_opts_info) as ydl:
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(10)  # 10-second timeout for extraction
-            try:
-                info = ydl.extract_info(url, download=False)
-                signal.alarm(0)  # Disable the alarm
-            except TimeoutException as e:
-                signal.alarm(0)
-                logger.error(f"Extraction timed out: {str(e)}")
-                return {"error": "Failed to extract video info due to timeout. Please try again later."}
+            info = timeout_wrapper(
+                lambda: ydl.extract_info(url, download=False),
+                10,
+                "Failed to extract video info due to timeout. Please try again later."
+            )
             title = info.get('title', 'unknown_title')
             sanitized_title = secure_filename(title)
             logger.info(f"Video title: {title}")
@@ -107,26 +121,24 @@ def download_audio_from_youtube(url):
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '192',
+                'preferredquality': '128',  # Reduced quality to speed up download
             }],
             'socket_timeout': 10,
             'extractor_retries': 2,
             'no-cache-dir': True,
             'nopart': True,
+            'http_chunk_size': 1024 * 1024,  # Download in 1 MB chunks
+            'max_filesize': 10 * 1024 * 1024,  # Limit to 10 MB
         }
         logger.debug(f"yt-dlp download options: {ydl_opts_download}")
 
         with NoSaveCookiesYDL(ydl_opts_download) as ydl_download:
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(10)  # 10-second timeout for download
-            try:
-                ydl_download.download([url])
-                signal.alarm(0)  # Disable the alarm
-                logger.info(f"Downloaded audio to: {original_file_path}")
-            except TimeoutException as e:
-                signal.alarm(0)
-                logger.error(f"Download timed out: {str(e)}")
-                return {"error": "Download took too long and timed out. Please try a shorter video or try again later."}
+            timeout_wrapper(
+                lambda: ydl_download.download([url]),
+                10,
+                "Download took too long and timed out. Please try a shorter video or try again later."
+            )
+            logger.info(f"Downloaded audio to: {original_file_path}")
 
         if not os.path.exists(original_file_path):
             logger.error(f"Downloaded file not found: {original_file_path}")
@@ -167,7 +179,12 @@ def download_audio_from_youtube(url):
             return {"error": "This video cannot be downloaded. YouTube requires authentication to access it, and the provided cookies may be invalid or expired."}
         if "player response" in error_msg.lower():
             return {"error": "Unable to access this YouTube video. It may be restricted or unavailable."}
+        if "file too large" in error_msg.lower():
+            return {"error": "The audio file is too large to download. Please try a shorter video."}
         return {"error": "Failed to download the video. Please try another URL."}
+    except TimeoutException as e:
+        logger.error(f"Timeout error: {str(e)}")
+        return {"error": str(e)}
     except Exception as e:
         logger.error(f"Unexpected error downloading audio: {str(e)}")
         return {"error": "An unexpected error occurred while downloading the video."}
