@@ -17,12 +17,15 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Use /tmp for temporary files on Railway
+# Use /tmp for temporary files on Render
 TEMP_DIR = "/tmp/temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Use the PORT environment variable for Railway
+# Use the PORT environment variable for Render
 port = int(os.getenv("PORT", 8080))
+
+# Path to the cookies file on Render
+COOKIES_FILE = "/app/youtube_cookies.txt"
 
 def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
@@ -37,18 +40,36 @@ def download_audio_from_youtube(url):
         original_file_path = f"{original_file_base}.mp3"
         converted_file_path = os.path.join(TEMP_DIR, f"{audio_id}_432hz.mp3")
         
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': original_file_base,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-        }
+        # Check if cookies file exists
+        if not os.path.exists(COOKIES_FILE):
+            logger.warning(f"Cookies file not found at {COOKIES_FILE}. Proceeding without cookies.")
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': original_file_base,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+            }
+        else:
+            logger.info(f"Using cookies file: {COOKIES_FILE}")
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': original_file_base,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'cookies': COOKIES_FILE,
+            }
 
         logger.info(f"yt-dlp options: {ydl_opts}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -74,12 +95,14 @@ def download_audio_from_youtube(url):
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
         logger.error(f"yt-dlp download error: {error_msg}")
+        if "sign in to confirm" in error_msg.lower() or "bot" in error_msg.lower():
+            return {"error": "This video cannot be downloaded. YouTube requires authentication to access it, and the provided cookies may be invalid or expired."}
         if "player response" in error_msg.lower():
             return {"error": "Unable to access this YouTube video. It may be restricted or unavailable."}
-        return None
+        return {"error": "Failed to download the video. Please try another URL."}
     except Exception as e:
         logger.error(f"Unexpected error downloading audio: {str(e)}")
-        return None
+        return {"error": "An unexpected error occurred while downloading the video."}
 
 def convert_to_432hz(input_path, output_path):
     try:
@@ -115,10 +138,10 @@ def convert_audio():
 
     logger.info(f"Received request to convert YouTube URL: {youtube_url}")
     result = download_audio_from_youtube(youtube_url)
-    if not result:
-        return jsonify({"success": False, "error": "Failed to process YouTube video"}), 500
     if "error" in result:
         return jsonify({"success": False, "error": result["error"]}), 400
+    if not result:
+        return jsonify({"success": False, "error": "Failed to process YouTube video"}), 500
 
     if not convert_to_432hz(result["original_path"], result["converted_path"]):
         cleanup_files(result["original_path"])
