@@ -62,10 +62,11 @@ def download_audio_from_youtube(url):
         converted_file_path = os.path.join(TEMP_DIR, f"{audio_id}_432hz.mp3")
         
         # Step 1: Extract video info
+        user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
         ydl_opts_info = {
             'quiet': True,
             'cookiefile': COOKIES_FILE,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'user_agent': user_agent,
             'format': 'bestaudio/best',
             'noplaylist': True,
             'cachedir': '/tmp/yt-dlp-cache',
@@ -83,8 +84,8 @@ def download_audio_from_youtube(url):
         proxy_url = os.getenv("PROXY_URL")
         ydl_opts_download = {
             'cookiefile': COOKIES_FILE,
-            'user_agent': ydl_opts_info['user_agent'],
-            'format': 'bestaudio[ext=m4a]/bestaudio',
+            'user_agent': user_agent,
+            'format': 'bestaudio/best',  # Changed to be more flexible
             'outtmpl': f"{original_file_base}.%(ext)s",
             'quiet': True,
             'postprocessors': [{
@@ -117,6 +118,15 @@ def download_audio_from_youtube(url):
     except DownloadError as e:
         error_msg = str(e)
         logger.error(f"yt-dlp download error: {error_msg}")
+        # If format is not available, log available formats for debugging
+        if "requested format is not available" in error_msg.lower():
+            try:
+                with NoSaveCookiesYDL({'listformats': True, 'cookiefile': COOKIES_FILE, 'user_agent': user_agent}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    formats = info.get('formats', [])
+                    logger.debug(f"Available formats: {formats}")
+            except Exception as fmt_error:
+                logger.error(f"Failed to list formats: {str(fmt_error)}")
         if "sign in to confirm" in error_msg.lower() or "bot" in error_msg.lower():
             return {"error": "This video cannot be downloaded. YouTube requires authentication to access it, and the provided cookies may be invalid or expired."}
         if "player response" in error_msg.lower():
@@ -229,9 +239,11 @@ def get_info():
         return jsonify({"error": "Invalid or missing YouTube URL"}), 400
 
     try:
+        user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
         ydl_opts = {
             'quiet': True,
             'cookiefile': COOKIES_FILE,
+            'user_agent': user_agent,
             'cachedir': '/tmp/yt-dlp-cache',
             'socket_timeout': 30,
         }
