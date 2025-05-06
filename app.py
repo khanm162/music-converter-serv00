@@ -1,277 +1,76 @@
+import uuid
 import os
-     import uuid
-     import subprocess
-     import logging
-     import re
-     import time
-     import threading
-     import requests
-     from flask import Flask, request, send_file, jsonify, url_for
-     from werkzeug.utils import secure_filename
-     from flask_cors import CORS
-     from io import BytesIO
-     from yt_dlp import YoutubeDL
-     from yt_dlp.utils import DownloadError
+import shutil
+from flask import Flask, request, jsonify
+from werkzeug.utils import secure_filename
+import yt_dlp
+from pydub import AudioSegment
 
-     # Setup
-     app = Flask(__name__)
-     CORS(app, resources={r"/api/*": {"origins": "*"}})
+app = Flask(__name__)
 
-     # Configure logging
-     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-     logger = logging.getLogger(__name__)
+# Configure upload and output directories
+UPLOAD_FOLDER = 'uploads'
+OUTPUT_FOLDER = 'output'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-     # Use /tmp for temporary files (Fly.io has a writable /tmp directory)
-     TEMP_DIR = "/tmp/temp_audio"
-     os.makedirs(TEMP_DIR, exist_ok=True)
+# yt-dlp options to download audio with cookies
+ydl_opts = {
+    'format': 'bestaudio/best',
+    'outtmpl': os.path.join(UPLOAD_FOLDER, '%(id)s.%(ext)s'),
+    'cookiefile': 'youtube_cookies.txt',
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '192',
+    }],
+}
 
-     # Use the PORT environment variable for Fly.io
-     port = int(os.getenv("PORT", 8080))
+def convert_to_432hz(input_path, output_path):
+    audio = AudioSegment.from_file(input_path)
+    sample_rate = audio.frame_rate
+    target_rate = int(sample_rate * (432 / 440))
+    audio = audio.set_frame_rate(target_rate)
+    audio.export(output_path, format="mp3")
 
-     # Path to the cookies file
-     COOKIES_FILE = os.getenv("COOKIES_FILE_PATH", "/app/youtube_cookies.txt")
+@app.route('/api/convert', methods=['POST'])
+def convert_audio():
+    data = request.get_json()
+    if not data or 'youtubeUrl' not in data:
+        return jsonify({"error": "Missing youtubeUrl in request"}), 400
 
-     # Check if cookies file exists
-     if not os.path.exists(COOKIES_FILE):
-         logger.error(f"Cookie file {COOKIES_FILE} not found")
-         raise FileNotFoundError(f"Cookie file {COOKIES_FILE} not found")
+    youtube_url = data['youtubeUrl']
+    try:
+        # Download audio using yt-dlp
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(youtube_url, download=True)
+            video_id = info['id']
+            input_file = os.path.join(UPLOAD_FOLDER, f"{video_id}.mp3")
 
-     # Log cookies file details
-     file_size = os.path.getsize(COOKIES_FILE)
-     logger.info(f"Cookies file size: {file_size} bytes")
-     with open(COOKIES_FILE, 'r') as f:
-         lines = f.readlines()
-         preview_lines = lines[:3] if len(lines) >= 3 else lines
-         sanitized_preview = [line.strip() if line.startswith('#') else '<cookie line>' for line in preview_lines]
-         logger.info(f"Cookies file preview (first 3 lines): {sanitized_preview}")
+        # Convert to 432Hz
+        output_filename = f"{uuid.uuid4()}.mp3"
+        output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+        convert_to_432hz(input_file, output_path)
 
-     # Timeout handler for operations
-     class TimeoutException(Exception):
-         pass
+        # Generate download URL
+        download_url = f"https://{request.host}/output/{output_filename}"
+        return jsonify({
+            "audioUrl": download_url,
+            "downloadUrl": download_url,
+            "status": "success"
+        }), 200
 
-     def timeout_wrapper(func, timeout_duration, error_message):
-         result = [None]
-         exception = [None]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-         def target():
-             try:
-                 result[0] = func()
-             except Exception as e:
-                 exception[0] = e
+    finally:
+        # Clean up
+        if os.path.exists(input_file):
+            os.remove(input_file)
 
-         thread = threading.Thread(target=target)
-         thread.daemon = True
-         thread.start()
-         thread.join(timeout_duration)
+@app.route('/output/<filename>')
+def serve_file(filename):
+    return send_from_directory(OUTPUT_FOLDER, filename)
 
-         if thread.is_alive():
-             raise TimeoutException(error_message)
-         if exception[0]:
-             raise exception[0]
-         return result[0]
-
-     def validate_youtube_url(url):
-         youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
-         return bool(re.match(youtube_regex, url))
-
-     def extract_title(url):
-         user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-         ydl_opts = {
-             'quiet': True,
-             'cookiefile': COOKIES_FILE,
-             'user_agent': user_agent,
-             'noplaylist': True,
-             'socket_timeout': 20,
-             'no-cache-dir': True,
-         }
-         try:
-             with YoutubeDL(ydl_opts) as ydl:
-                 info = ydl.extract_info(url, download=False)
-                 return info.get('title', 'unknown_title')
-         except Exception as e:
-             logger.warning(f"Failed to extract title: {str(e)}")
-             return 'unknown_title'
-
-     def download_audio_from_youtube(url):
-         try:
-             logger.info(f"Attempting to download audio from URL: {url}")
-
-             audio_id = f"audio_{uuid.uuid4().hex[:8]}"
-             original_file_base = os.path.join(TEMP_DIR, f"{audio_id}_original")
-             original_file_path = f"{original_file_base}.mp3"
-             converted_file_path = os.path.join(TEMP_DIR, f"{audio_id}_432hz.mp3")
-
-             # Step 1: Extract title
-             title = extract_title(url)
-             sanitized_title = secure_filename(title)
-             logger.info(f"Video title: {title}")
-
-             # Step 2: Download audio using yt-dlp
-             user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-             ydl_opts = {
-                 'format': 'bestaudio/best',
-                 'outtmpl': original_file_base + '.%(ext)s',
-                 'cookiefile': COOKIES_FILE,
-                 'user_agent': user_agent,
-                 'noplaylist': True,
-                 'socket_timeout': 20,
-                 'postprocessors': [{
-                     'key': 'FFmpegExtractAudio',
-                     'preferredcodec': 'mp3',
-                     'preferredquality': '128',
-                 }],
-             }
-             logger.info(f"Downloading audio using yt-dlp")
-             with YoutubeDL(ydl_opts) as ydl:
-                 ydl.download([url])
-
-             # Check if the file was downloaded
-             if not os.path.exists(original_file_path):
-                 logger.error(f"Downloaded file not found: {original_file_path}")
-                 raise Exception("Downloaded file not found")
-
-             return {
-                 "audio_id": audio_id,
-                 "original_path": original_file_path,
-                 "converted_path": converted_file_path,
-                 "title": title,
-                 "sanitized_title": sanitized_title
-             }
-
-         except TimeoutException as e:
-             logger.error(f"Timeout error: {str(e)}")
-             return {"error": str(e)}
-         except DownloadError as e:
-             logger.error(f"yt-dlp download error: {str(e)}")
-             return {"error": "Failed to download the audio stream. Please try again later."}
-         except Exception as e:
-             logger.error(f"Unexpected error downloading audio: {str(e)}")
-             if "exceeds 10 MB limit" in str(e):
-                 return {"error": "The audio file is too large to download. Please try a shorter video."}
-             return {"error": "An unexpected error occurred while downloading the video."}
-
-     def convert_to_432hz(input_path, output_path):
-         try:
-             cmd = [
-                 "ffmpeg", "-y", "-i", input_path,
-                 "-af", "asetrate=44100*432/440,aresample=44100",
-                 output_path
-             ]
-             logger.debug(f"Running FFmpeg command: {' '.join(cmd)}")
-             subprocess.run(cmd, check=True, capture_output=True, text=True)
-             logger.info(f"Conversion to 432Hz successful. Output saved at: {output_path}")
-             return True
-         except subprocess.CalledProcessError as e:
-             logger.error(f"FFmpeg conversion error: {e.stderr}")
-             return False
-
-     def cleanup_files(*file_paths):
-         for file_path in file_paths:
-             try:
-                 if file_path and os.path.exists(file_path):
-                     os.remove(file_path)
-                     logger.info(f"Deleted file: {file_path}")
-             except Exception as e:
-                 logger.warning(f"Failed to delete file {file_path}: {e}")
-
-     @app.route("/api/convert", methods=["POST"])
-     def convert_audio():
-         data = request.get_json()
-         youtube_url = data.get("youtubeUrl")
-
-         if not youtube_url or not validate_youtube_url(youtube_url):
-             logger.error(f"Invalid or missing YouTube URL: {youtube_url}")
-             return jsonify({"success": False, "error": "Invalid or missing YouTube URL"}), 400
-
-         logger.info(f"Received request to convert YouTube URL: {youtube_url}")
-         result = download_audio_from_youtube(youtube_url)
-         if "error" in result:
-             return jsonify({"success": False, "error": result["error"]}), 400
-         if not result:
-             return jsonify({"success": False, "error": "Failed to process YouTube video"}), 500
-
-         if not convert_to_432hz(result["original_path"], result["converted_path"]):
-             cleanup_files(result["original_path"])
-             return jsonify({"success": False, "error": "Conversion to 432Hz failed"}), 500
-
-         audio_id = result["audio_id"]
-         sanitized_title = result["sanitized_title"]
-         audio_url = url_for('stream_audio', audio_id=audio_id, _external=True)
-         download_url = url_for('download_audio', audio_id=audio_id, _external=True)
-         share_url = audio_url
-
-         cleanup_files(result["original_path"])
-
-         return jsonify({
-             "success": True,
-             "audioUrl": audio_url,
-             "downloadUrl": download_url,
-             "shareUrl": share_url,
-             "title": result["title"],
-             "sanitized_title": sanitized_title
-         })
-
-     @app.route("/api/stream/<audio_id>", methods=["GET"])
-     def stream_audio(audio_id):
-         audio_path = os.path.join(TEMP_DIR, f"{audio_id}_432hz.mp3")
-         if not os.path.exists(audio_path):
-             logger.error(f"Audio file not found: {audio_path}")
-             return jsonify({"error": "Audio not found"}), 404
-
-         with open(audio_path, 'rb') as f:
-             return send_file(
-                 BytesIO(f.read()),
-                 mimetype="audio/mpeg",
-                 as_attachment=False
-             )
-
-     @app.route("/api/download/<audio_id>", methods=["GET"])
-     def download_audio(audio_id):
-         audio_path = os.path.join(TEMP_DIR, f"{audio_id}_432hz.mp3")
-         if not os.path.exists(audio_path):
-             logger.error(f"Audio file not found: {audio_path}")
-             return jsonify({"error": "Audio not found"}), 404
-
-         sanitized_title = request.args.get('title', 'converted_432hz')
-
-         response = send_file(
-             audio_path,
-             mimetype="audio/mpeg",
-             as_attachment=True,
-             download_name=f"{sanitized_title}.mp3"
-         )
-         cleanup_files(audio_path)
-         return response
-
-     @app.route("/api/info", methods=["POST"])
-     def get_info():
-         data = request.get_json()
-         youtube_url = data.get("youtubeUrl")
-
-         if not youtube_url or not validate_youtube_url(youtube_url):
-             logger.error(f"Invalid or missing YouTube URL: {youtube_url}")
-             return jsonify({"error": "Invalid or missing YouTube URL"}), 400
-
-         try:
-             title = extract_title(youtube_url)
-             return jsonify({
-                 "title": title
-             })
-         except Exception as e:
-             logger.error(f"Error fetching video info: {e}")
-             return jsonify({"error": "Invalid YouTube URL"}), 500
-
-     @app.teardown_request
-     def cleanup_temp_files(exception=None):
-         for filename in os.listdir(TEMP_DIR):
-             file_path = os.path.join(TEMP_DIR, filename)
-             if os.path.isfile(file_path):
-                 try:
-                     if os.path.getmtime(file_path) < time.time() - 3600:
-                         os.remove(file_path)
-                         logger.info(f"Deleted old file: {file_path}")
-                 except Exception as e:
-                     logger.warning(f"Failed to delete old file {file_path}: {e}")
-
-     if __name__ == "__main__":
-         app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
