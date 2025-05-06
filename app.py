@@ -4,6 +4,7 @@ import subprocess
 import logging
 import re
 import time
+import requests
 from flask import Flask, request, send_file, jsonify, url_for
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
@@ -24,8 +25,32 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 # Use the PORT environment variable for Render
 port = int(os.getenv("PORT", 8080))
 
-# Path to the cookies file on Render
-COOKIES_FILE = "/etc/secrets/youtube_cookies.txt"
+# Path to store the downloaded cookies file
+COOKIES_FILE = os.path.join(TEMP_DIR, "youtube_cookies.txt")
+
+# Download cookies file from GitHub at startup
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+COOKIES_URL = "https://raw.githubusercontent.com/<your-username>/<cookies-repo>/main/youtube_cookies.txt"  # Replace with your repo details
+
+def download_cookies_file():
+    if not GITHUB_TOKEN:
+        logger.error("GITHUB_TOKEN environment variable not set. Cannot download cookies file.")
+        return False
+    
+    try:
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        response = requests.get(COOKIES_URL, headers=headers)
+        response.raise_for_status()
+        with open(COOKIES_FILE, "w") as f:
+            f.write(response.text)
+        logger.info(f"Successfully downloaded cookies file to {COOKIES_FILE}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to download cookies file from GitHub: {str(e)}")
+        return False
+
+# Download cookies file when the app starts
+download_cookies_file()
 
 def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
@@ -40,7 +65,7 @@ def download_audio_from_youtube(url):
         original_file_path = f"{original_file_base}.mp3"
         converted_file_path = os.path.join(TEMP_DIR, f"{audio_id}_432hz.mp3")
         
-        # Check if cookies file exists
+        # Check if cookies file exists and log details
         if not os.path.exists(COOKIES_FILE):
             logger.warning(f"Cookies file not found at {COOKIES_FILE}. Proceeding without cookies.")
             ydl_opts = {
@@ -62,7 +87,17 @@ def download_audio_from_youtube(url):
                 },
             }
         else:
-            logger.info(f"Using cookies file: {COOKIES_FILE}")
+            logger.info(f"Cookies file found at: {COOKIES_FILE}")
+            # Log file size
+            file_size = os.path.getsize(COOKIES_FILE)
+            logger.info(f"Cookies file size: {file_size} bytes")
+            # Log first few lines (avoid logging sensitive data)
+            with open(COOKIES_FILE, 'r') as f:
+                lines = f.readlines()
+                preview_lines = lines[:3] if len(lines) >= 3 else lines
+                sanitized_preview = [line.strip() if line.startswith('#') else '<cookie line>' for line in preview_lines]
+                logger.info(f"Cookies file preview (first 3 lines): {sanitized_preview}")
+            
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': original_file_base,
