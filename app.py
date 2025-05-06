@@ -24,7 +24,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 # Use the PORT environment variable for Render
 port = int(os.getenv("PORT", 8080))
 
-# Path to the cookies file on Render (corrected to Render's secret files path)
+# Path to the cookies file on Render
 COOKIES_FILE = "/etc/secrets/youtube_cookies.txt"
 
 def validate_youtube_url(url):
@@ -54,6 +54,12 @@ def download_audio_from_youtube(url):
                 'quiet': True,
                 'no_warnings': True,
                 'extract_flat': False,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'http_headers': {
+                    'Referer': 'https://www.youtube.com/',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
             }
         else:
             logger.info(f"Using cookies file: {COOKIES_FILE}")
@@ -69,6 +75,12 @@ def download_audio_from_youtube(url):
                 'no_warnings': True,
                 'extract_flat': False,
                 'cookies': COOKIES_FILE,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'http_headers': {
+                    'Referer': 'https://www.youtube.com/',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
             }
 
         logger.info(f"yt-dlp options: {ydl_opts}")
