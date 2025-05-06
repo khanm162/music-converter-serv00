@@ -4,17 +4,20 @@ import subprocess
 import logging
 import re
 import time
+import requests
 from flask import Flask, request, send_file, jsonify, url_for
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from io import BytesIO
-import yt_dlp
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 
 # Setup
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Use /tmp for temporary files on Render
@@ -24,8 +27,52 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 # Use the PORT environment variable for Render
 port = int(os.getenv("PORT", 8080))
 
-# Path to the cookies file on Render
-COOKIES_FILE = "/etc/secrets/youtube_cookies.txt"
+# Path to store the downloaded cookies file
+COOKIES_FILE = os.path.join(TEMP_DIR, "youtube_cookies.txt")
+
+# Download cookies file from GitHub at startup
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+COOKIES_URL = "https://raw.githubusercontent.com/khanm162/cookies-repo/main/youtube_cookies.txt"  # Replace with your repo details
+
+def download_cookies_file():
+    if not GITHUB_TOKEN:
+        logger.error("GITHUB_TOKEN environment variable not set. Cannot download cookies file.")
+        return False
+    
+    try:
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        response = requests.get(COOKIES_URL, headers=headers)
+        response.raise_for_status()
+        with open(COOKIES_FILE, "w") as f:
+            f.write(response.text)
+        logger.info(f"Successfully downloaded cookies file to {COOKIES_FILE}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to download cookies file from GitHub: {str(e)}")
+        return False
+
+# Download cookies file when the app starts
+if not download_cookies_file():
+    raise FileNotFoundError("Failed to download cookies file from GitHub")
+
+# Check if cookies file exists
+if not os.path.exists(COOKIES_FILE):
+    logger.error(f"Cookie file {COOKIES_FILE} not found")
+    raise FileNotFoundError(f"Cookie file {COOKIES_FILE} not found")
+
+# Log cookies file details
+file_size = os.path.getsize(COOKIES_FILE)
+logger.info(f"Cookies file size: {file_size} bytes")
+with open(COOKIES_FILE, 'r') as f:
+    lines = f.readlines()
+    preview_lines = lines[:3] if len(lines) >= 3 else lines
+    sanitized_preview = [line.strip() if line.startswith('#') else '<cookie line>' for line in preview_lines]
+    logger.info(f"Cookies file preview (first 3 lines): {sanitized_preview}")
+
+# Custom YoutubeDL class to prevent saving cookies
+class NoSaveCookiesYDL(YoutubeDL):
+    def save_cookies(self, *args, **kwargs):
+        pass  # Prevent yt-dlp from trying to save cookies
 
 def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
@@ -40,72 +87,51 @@ def download_audio_from_youtube(url):
         original_file_path = f"{original_file_base}.mp3"
         converted_file_path = os.path.join(TEMP_DIR, f"{audio_id}_432hz.mp3")
         
-        # Check if cookies file exists and log details
-        if not os.path.exists(COOKIES_FILE):
-            logger.warning(f"Cookies file not found at {COOKIES_FILE}. Proceeding without cookies.")
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': original_file_base,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'http_headers': {
-                    'Referer': 'https://www.youtube.com/',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
-            }
-        else:
-            logger.info(f"Cookies file found at: {COOKIES_FILE}")
-            # Log file size
-            file_size = os.path.getsize(COOKIES_FILE)
-            logger.info(f"Cookies file size: {file_size} bytes")
-            # Log first few lines (avoid logging sensitive data)
-            with open(COOKIES_FILE, 'r') as f:
-                lines = f.readlines()
-                preview_lines = lines[:3] if len(lines) >= 3 else lines
-                sanitized_preview = [line.strip() if line.startswith('#') else '<cookie line>' for line in preview_lines]
-                logger.info(f"Cookies file preview (first 3 lines): {sanitized_preview}")
-            
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': original_file_base,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'cookies': COOKIES_FILE,
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'http_headers': {
-                    'Referer': 'https://www.youtube.com/',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
-            }
+        # Step 1: Extract video info
+        ydl_opts_info = {
+            'quiet': True,
+            'cookiefile': COOKIES_FILE,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'format': 'bestaudio/best',
+            'noplaylist': True,
+            'cachedir': '/tmp/yt-dlp-cache',
+            'socket_timeout': 30,
+        }
+        logger.debug(f"yt-dlp extract info options: {ydl_opts_info}")
 
-        logger.info(f"yt-dlp options: {ydl_opts}")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info("Starting download with yt-dlp...")
-            info = ydl.extract_info(url, download=True)
+        with NoSaveCookiesYDL(ydl_opts_info) as ydl:
+            info = ydl.extract_info(url, download=False)
             title = info.get('title', 'unknown_title')
             sanitized_title = secure_filename(title)
             logger.info(f"Video title: {title}")
+
+        # Step 2: Download audio
+        proxy_url = os.getenv("PROXY_URL")
+        ydl_opts_download = {
+            'cookiefile': COOKIES_FILE,
+            'user_agent': ydl_opts_info['user_agent'],
+            'format': 'bestaudio[ext=m4a]/bestaudio',
+            'outtmpl': f"{original_file_base}.%(ext)s",
+            'quiet': True,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'cachedir': '/tmp/yt-dlp-cache',
+            'socket_timeout': 30,
+            'proxy': proxy_url if proxy_url else None,
+        }
+        logger.debug(f"yt-dlp download options: {ydl_opts_download}")
+
+        with NoSaveCookiesYDL(ydl_opts_download) as ydl_download:
+            ydl_download.download([url])
+            logger.info(f"Downloaded audio to: {original_file_path}")
 
         if not os.path.exists(original_file_path):
             logger.error(f"Downloaded file not found: {original_file_path}")
             raise Exception("Downloaded file not found")
 
-        logger.info(f"Download successful. File saved at: {original_file_path}")
         return {
             "audio_id": audio_id,
             "original_path": original_file_path,
@@ -114,7 +140,7 @@ def download_audio_from_youtube(url):
             "sanitized_title": sanitized_title
         }
 
-    except yt_dlp.utils.DownloadError as e:
+    except DownloadError as e:
         error_msg = str(e)
         logger.error(f"yt-dlp download error: {error_msg}")
         if "sign in to confirm" in error_msg.lower() or "bot" in error_msg.lower():
@@ -129,11 +155,11 @@ def download_audio_from_youtube(url):
 def convert_to_432hz(input_path, output_path):
     try:
         cmd = [
-            "ffmpeg", "-i", input_path, "-af",
-            "asetrate=44100*432/440,aresample=44100",
+            "ffmpeg", "-y", "-i", input_path,
+            "-af", "asetrate=44100*432/440,aresample=44100",
             output_path
         ]
-        logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
+        logger.debug(f"Running FFmpeg command: {' '.join(cmd)}")
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         logger.info(f"Conversion to 432Hz successful. Output saved at: {output_path}")
         return True
@@ -156,6 +182,7 @@ def convert_audio():
     youtube_url = data.get("youtubeUrl")
 
     if not youtube_url or not validate_youtube_url(youtube_url):
+        logger.error(f"Invalid or missing YouTube URL: {youtube_url}")
         return jsonify({"success": False, "error": "Invalid or missing YouTube URL"}), 400
 
     logger.info(f"Received request to convert YouTube URL: {youtube_url}")
@@ -224,11 +251,17 @@ def get_info():
     youtube_url = data.get("youtubeUrl")
 
     if not youtube_url or not validate_youtube_url(youtube_url):
+        logger.error(f"Invalid or missing YouTube URL: {youtube_url}")
         return jsonify({"error": "Invalid or missing YouTube URL"}), 400
 
     try:
-        ydl_opts = {'quiet': True, 'no_warnings': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl_opts = {
+            'quiet': True,
+            'cookiefile': COOKIES_FILE,
+            'cachedir': '/tmp/yt-dlp-cache',
+            'socket_timeout': 30,
+        }
+        with NoSaveCookiesYDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
             return jsonify({
                 "title": info.get('title', 'unknown_title')
