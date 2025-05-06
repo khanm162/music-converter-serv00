@@ -4,7 +4,6 @@ import subprocess
 import logging
 import re
 import time
-import requests
 from flask import Flask, request, send_file, jsonify, url_for
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
@@ -27,33 +26,8 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 # Use the PORT environment variable for Render
 port = int(os.getenv("PORT", 8080))
 
-# Path to store the downloaded cookies file
-COOKIES_FILE = os.path.join(TEMP_DIR, "youtube_cookies.txt")
-
-# Download cookies file from GitHub at startup
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-COOKIES_URL = "https://raw.githubusercontent.com/khanm162/cookies-repo/main/youtube_cookies.txt"  # Replace with your repo details
-
-def download_cookies_file():
-    if not GITHUB_TOKEN:
-        logger.error("GITHUB_TOKEN environment variable not set. Cannot download cookies file.")
-        return False
-    
-    try:
-        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-        response = requests.get(COOKIES_URL, headers=headers)
-        response.raise_for_status()
-        with open(COOKIES_FILE, "w") as f:
-            f.write(response.text)
-        logger.info(f"Successfully downloaded cookies file to {COOKIES_FILE}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to download cookies file from GitHub: {str(e)}")
-        return False
-
-# Download cookies file when the app starts
-if not download_cookies_file():
-    raise FileNotFoundError("Failed to download cookies file from GitHub")
+# Path to the cookies file on Render
+COOKIES_FILE = "/etc/secrets/youtube_cookies.txt"
 
 # Check if cookies file exists
 if not os.path.exists(COOKIES_FILE):
