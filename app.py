@@ -70,7 +70,7 @@ def download_audio_from_youtube(url):
             'format': 'bestaudio/best',
             'noplaylist': True,
             'cachedir': '/tmp/yt-dlp-cache',
-            'socket_timeout': 30,
+            'socket_timeout': 15,  # Reduced to avoid timeouts
         }
         logger.debug(f"yt-dlp extract info options: {ydl_opts_info}")
 
@@ -81,9 +81,6 @@ def download_audio_from_youtube(url):
             logger.info(f"Video title: {title}")
 
         # Step 2: Download audio
-        proxy_url = os.getenv("PROXY_URL")
-        if not proxy_url:
-            logger.warning("PROXY_URL environment variable not set. This may lead to download issues.")
         ydl_opts_download = {
             'cookiefile': COOKIES_FILE,
             'user_agent': user_agent,
@@ -96,14 +93,19 @@ def download_audio_from_youtube(url):
                 'preferredquality': '192',
             }],
             'cachedir': '/tmp/yt-dlp-cache',
-            'socket_timeout': 30,
-            'proxy': proxy_url if proxy_url else None,
+            'socket_timeout': 15,  # Reduced to avoid timeouts
+            'nopart': True,  # Avoid partial downloads
         }
         logger.debug(f"yt-dlp download options: {ydl_opts_download}")
 
         with NoSaveCookiesYDL(ydl_opts_download) as ydl_download:
-            ydl_download.download([url])
-            logger.info(f"Downloaded audio to: {original_file_path}")
+            # Set a timeout for the download operation
+            try:
+                ydl_download.download([url])
+                logger.info(f"Downloaded audio to: {original_file_path}")
+            except Exception as download_error:
+                logger.error(f"Download failed: {str(download_error)}")
+                raise download_error
 
         if not os.path.exists(original_file_path):
             logger.error(f"Downloaded file not found: {original_file_path}")
@@ -258,7 +260,7 @@ def get_info():
             'cookiefile': COOKIES_FILE,
             'user_agent': user_agent,
             'cachedir': '/tmp/yt-dlp-cache',
-            'socket_timeout': 30,
+            'socket_timeout': 15,  # Reduced to avoid timeouts
         }
         with NoSaveCookiesYDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
