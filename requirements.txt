@@ -1,0 +1,7 @@
+Flask==3.0.3
+requests==2.32.3
+yt-dlp==2024.10.22
+ffmpeg-python==0.2.0
+Flask-Cors==5.0.0
+gunicorn==23.0.0
+werkzeug==3.0.4
