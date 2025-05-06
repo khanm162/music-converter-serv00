@@ -4,6 +4,7 @@ import subprocess
 import logging
 import re
 import time
+import signal
 from flask import Flask, request, send_file, jsonify, url_for
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
@@ -48,6 +49,13 @@ class NoSaveCookiesYDL(YoutubeDL):
     def save_cookies(self, *args, **kwargs):
         pass  # Prevent yt-dlp from trying to save cookies
 
+# Timeout handler for download operation
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException("Download operation timed out")
+
 def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
     return bool(re.match(youtube_regex, url))
@@ -69,8 +77,7 @@ def download_audio_from_youtube(url):
             'user_agent': user_agent,
             'format': 'bestaudio/best',
             'noplaylist': True,
-            'cachedir': '/tmp/yt-dlp-cache',
-            'socket_timeout': 15,  # Reduced to avoid timeouts
+            'socket_timeout': 15,
         }
         logger.debug(f"yt-dlp extract info options: {ydl_opts_info}")
 
@@ -92,20 +99,23 @@ def download_audio_from_youtube(url):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'cachedir': '/tmp/yt-dlp-cache',
-            'socket_timeout': 15,  # Reduced to avoid timeouts
-            'nopart': True,  # Avoid partial downloads
+            'socket_timeout': 15,
+            'nopart': True,
         }
         logger.debug(f"yt-dlp download options: {ydl_opts_download}")
 
         with NoSaveCookiesYDL(ydl_opts_download) as ydl_download:
-            # Set a timeout for the download operation
+            # Set a 25-second timeout for the download operation
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(25)
             try:
                 ydl_download.download([url])
+                signal.alarm(0)  # Disable the alarm
                 logger.info(f"Downloaded audio to: {original_file_path}")
-            except Exception as download_error:
-                logger.error(f"Download failed: {str(download_error)}")
-                raise download_error
+            except TimeoutException as e:
+                signal.alarm(0)  # Disable the alarm
+                logger.error(f"Download timed out: {str(e)}")
+                return {"error": "Download took too long and timed out. Please try a shorter video or try again later."}
 
         if not os.path.exists(original_file_path):
             logger.error(f"Downloaded file not found: {original_file_path}")
@@ -259,8 +269,7 @@ def get_info():
             'quiet': True,
             'cookiefile': COOKIES_FILE,
             'user_agent': user_agent,
-            'cachedir': '/tmp/yt-dlp-cache',
-            'socket_timeout': 15,  # Reduced to avoid timeouts
+            'socket_timeout': 15,
         }
         with NoSaveCookiesYDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
