@@ -45,11 +45,6 @@ with open(COOKIES_FILE, 'r') as f:
     sanitized_preview = [line.strip() if line.startswith('#') else '<cookie line>' for line in preview_lines]
     logger.info(f"Cookies file preview (first 3 lines): {sanitized_preview}")
 
-# Custom YoutubeDL class to prevent saving cookies
-class NoSaveCookiesYDL(YoutubeDL):
-    def save_cookies(self, *args, **kwargs):
-        pass  # Prevent yt-dlp from trying to save cookies
-
 # Timeout handler for operations
 class TimeoutException(Exception):
     pass
@@ -79,6 +74,49 @@ def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
     return bool(re.match(youtube_regex, url))
 
+def extract_audio_url_manually(url):
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
+    headers = {'User-Agent': user_agent}
+    
+    # Step 1: Fetch the webpage
+    logger.info("Fetching YouTube webpage manually")
+    response = requests.get(url, headers=headers, timeout=10)
+    response.raise_for_status()
+    webpage = response.text
+    
+    # Step 2: Extract ytInitialData
+    yt_initial_data_match = re.search(r'ytInitialData\s*=\s*({.*?});', webpage, re.DOTALL)
+    if not yt_initial_data_match:
+        raise Exception("Could not find ytInitialData in webpage")
+    
+    # Step 3: Extract audio URL (simplified approach)
+    # Note: This is a basic regex-based extraction and might break if YouTube changes their format
+    audio_url_match = re.search(r'"url":"(https:\/\/[^"]+\.googlevideo\.com\/[^"]+)"', webpage)
+    if not audio_url_match:
+        raise Exception("Could not find audio URL in webpage")
+    
+    audio_url = audio_url_match.group(1)
+    logger.info(f"Manually extracted audio URL: {audio_url}")
+    return audio_url
+
+def extract_title(url):
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
+    ydl_opts = {
+        'quiet': True,
+        'cookiefile': COOKIES_FILE,
+        'user_agent': user_agent,
+        'noplaylist': True,
+        'socket_timeout': 5,
+        'no-cache-dir': True,
+    }
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info.get('title', 'unknown_title')
+    except Exception as e:
+        logger.warning(f"Failed to extract title: {str(e)}")
+        return 'unknown_title'
+
 def download_audio_from_youtube(url):
     try:
         logger.info(f"Attempting to download audio from URL: {url}")
@@ -88,87 +126,40 @@ def download_audio_from_youtube(url):
         original_file_path = f"{original_file_base}.mp3"
         converted_file_path = os.path.join(TEMP_DIR, f"{audio_id}_432hz.mp3")
         
-        # Step 1: Extract video info and audio URL
-        user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-        ydl_opts_info = {
-            'quiet': True,
-            'cookiefile': COOKIES_FILE,
-            'user_agent': user_agent,
-            'format': 'bestaudio/best',
-            'noplaylist': True,
-            'socket_timeout': 10,
-            'extractor_retries': 2,
-            'no-cache-dir': True,
-            'geturl': True,  # Only extract the direct URL
-        }
-        logger.debug(f"yt-dlp extract info options: {ydl_opts_info}")
+        # Step 1: Extract audio URL manually
+        audio_url = timeout_wrapper(
+            lambda: extract_audio_url_manually(url),
+            10,
+            "Failed to extract audio URL due to timeout. Please try again later."
+        )
 
-        audio_url = None
-        title = 'unknown_title'
-        with NoSaveCookiesYDL(ydl_opts_info) as ydl:
-            try:
-                audio_url = timeout_wrapper(
-                    lambda: ydl.extract_info(url, download=False),
-                    12,  # Increased to 12 seconds
-                    "Failed to extract video info due to timeout. Please try again later."
-                )
-                logger.info(f"Extracted audio URL: {audio_url}")
-            except TimeoutException as e:
-                # Fallback: Try minimal extraction
-                logger.warning("Falling back to minimal extraction due to timeout")
-                ydl_opts_minimal = {
-                    'quiet': True,
-                    'cookiefile': COOKIES_FILE,
-                    'user_agent': user_agent,
-                    'format': 'bestaudio/best',
-                    'noplaylist': True,
-                    'socket_timeout': 5,
-                    'extractor_retries': 1,
-                    'no-cache-dir': True,
-                    'geturl': True,
-                }
-                audio_url = timeout_wrapper(
-                    lambda: ydl.extract_info(url, download=False),
-                    5,
-                    "Failed to extract video info even with minimal settings. Please try again later."
-                )
-                logger.info(f"Extracted audio URL with minimal settings: {audio_url}")
-
-        # Try to get the title separately
-        try:
-            ydl_opts_title = {
-                'quiet': True,
-                'cookiefile': COOKIES_FILE,
-                'user_agent': user_agent,
-                'noplaylist': True,
-                'socket_timeout': 5,
-                'no-cache-dir': True,
-            }
-            with NoSaveCookiesYDL(ydl_opts_title) as ydl_title:
-                info = ydl_title.extract_info(url, download=False)
-                title = info.get('title', 'unknown_title')
-                logger.info(f"Video title: {title}")
-        except Exception as e:
-            logger.warning(f"Failed to extract title: {str(e)}")
-
+        # Step 2: Extract title
+        title = extract_title(url)
         sanitized_title = secure_filename(title)
+        logger.info(f"Video title: {title}")
 
-        if not audio_url:
-            return {"error": "Failed to extract audio URL from the video."}
-
-        # Step 2: Download audio directly from the extracted URL
-        logger.info(f"Downloading audio from extracted URL")
+        # Step 3: Download audio directly from the extracted URL
+        user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
+        logger.info(f"Downloading audio from extracted URL: {audio_url}")
         response = requests.get(audio_url, headers={'User-Agent': user_agent}, stream=True, timeout=10)
         response.raise_for_status()
 
-        with open(f"{original_file_base}.webm", 'wb') as f:
+        # Limit file size to 10 MB
+        max_file_size = 10 * 1024 * 1024  # 10 MB
+        downloaded_size = 0
+        temp_file_path = f"{original_file_base}.webm"
+        
+        with open(temp_file_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1 MB chunks
                 if chunk:
+                    downloaded_size += len(chunk)
+                    if downloaded_size > max_file_size:
+                        raise Exception("Audio file exceeds 10 MB limit")
                     f.write(chunk)
 
-        # Step 3: Convert the downloaded file to MP3
+        # Step 4: Convert the downloaded file to MP3
         cmd_convert = [
-            "ffmpeg", "-y", "-i", f"{original_file_base}.webm",
+            "ffmpeg", "-y", "-i", temp_file_path,
             "-c:a", "mp3", "-b:a", "128k",
             original_file_path
         ]
@@ -176,7 +167,7 @@ def download_audio_from_youtube(url):
         subprocess.run(cmd_convert, check=True, capture_output=True, text=True)
 
         # Clean up the temporary webm file
-        os.remove(f"{original_file_base}.webm")
+        os.remove(temp_file_path)
 
         if not os.path.exists(original_file_path):
             logger.error(f"Converted file not found: {original_file_path}")
@@ -190,17 +181,6 @@ def download_audio_from_youtube(url):
             "sanitized_title": sanitized_title
         }
 
-    except DownloadError as e:
-        error_msg = str(e)
-        logger.error(f"yt-dlp download error: {error_msg}")
-        # Handle HTTP 403 Forbidden specifically
-        if "http error 403" in error_msg.lower():
-            return {"error": "Access denied (HTTP 403). The video may be restricted (e.g., region-locked or age-restricted)."}
-        if "sign in to confirm" in error_msg.lower() or "bot" in error_msg.lower():
-            return {"error": "This video cannot be downloaded. YouTube requires authentication to access it, and the provided cookies may be invalid or expired."}
-        if "player response" in error_msg.lower():
-            return {"error": "Unable to access this YouTube video. It may be restricted or unavailable."}
-        return {"error": "Failed to download the video. Please try another URL."}
     except TimeoutException as e:
         logger.error(f"Timeout error: {str(e)}")
         return {"error": str(e)}
@@ -209,6 +189,8 @@ def download_audio_from_youtube(url):
         return {"error": "Failed to download the audio stream. Please try again later."}
     except Exception as e:
         logger.error(f"Unexpected error downloading audio: {str(e)}")
+        if "exceeds 10 MB limit" in str(e):
+            return {"error": "The audio file is too large to download. Please try a shorter video."}
         return {"error": "An unexpected error occurred while downloading the video."}
 
 def convert_to_432hz(input_path, output_path):
@@ -314,19 +296,10 @@ def get_info():
         return jsonify({"error": "Invalid or missing YouTube URL"}), 400
 
     try:
-        user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-        ydl_opts = {
-            'quiet': True,
-            'cookiefile': COOKIES_FILE,
-            'user_agent': user_agent,
-            'socket_timeout': 5,
-            'no-cache-dir': True,
-        }
-        with NoSaveCookiesYDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False)
-            return jsonify({
-                "title": info.get('title', 'unknown_title')
-            })
+        title = extract_title(youtube_url)
+        return jsonify({
+            "title": title
+        })
     except Exception as e:
         logger.error(f"Error fetching video info: {e}")
         return jsonify({"error": "Invalid YouTube URL"}), 500
