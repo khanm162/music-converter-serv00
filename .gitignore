@@ -1,5 +1,0 @@
-# Virtual environment
-venv/
-# Other common ignores
-__pycache__/
-*.pyc .env
