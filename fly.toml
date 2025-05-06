@@ -1,5 +1,5 @@
 # fly.toml file for music-converter app
-      app = "music-converter-2"
+       app = "music-converter-2"
  primary_region = "bom"
 
  [build]
@@ -8,6 +8,6 @@
  [http_service]
    internal_port = 8080
    force_https = true
-   auto_stop_machines = true
+   auto_stop_machines = false
    auto_start_machines = true
-   min_machines_running = 0
+   min_machines_running = 1
