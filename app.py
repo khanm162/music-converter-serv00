@@ -49,12 +49,12 @@ class NoSaveCookiesYDL(YoutubeDL):
     def save_cookies(self, *args, **kwargs):
         pass  # Prevent yt-dlp from trying to save cookies
 
-# Timeout handler for download operation
+# Timeout handler for operations
 class TimeoutException(Exception):
     pass
 
 def timeout_handler(signum, frame):
-    raise TimeoutException("Download operation timed out")
+    raise TimeoutException("Operation timed out")
 
 def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
@@ -77,12 +77,22 @@ def download_audio_from_youtube(url):
             'user_agent': user_agent,
             'format': 'bestaudio/best',
             'noplaylist': True,
-            'socket_timeout': 15,
+            'socket_timeout': 10,
+            'extractor_retries': 2,
+            'no-cache-dir': True,
         }
         logger.debug(f"yt-dlp extract info options: {ydl_opts_info}")
 
         with NoSaveCookiesYDL(ydl_opts_info) as ydl:
-            info = ydl.extract_info(url, download=False)
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(10)  # 10-second timeout for extraction
+            try:
+                info = ydl.extract_info(url, download=False)
+                signal.alarm(0)  # Disable the alarm
+            except TimeoutException as e:
+                signal.alarm(0)
+                logger.error(f"Extraction timed out: {str(e)}")
+                return {"error": "Failed to extract video info due to timeout. Please try again later."}
             title = info.get('title', 'unknown_title')
             sanitized_title = secure_filename(title)
             logger.info(f"Video title: {title}")
@@ -99,21 +109,22 @@ def download_audio_from_youtube(url):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'socket_timeout': 15,
+            'socket_timeout': 10,
+            'extractor_retries': 2,
+            'no-cache-dir': True,
             'nopart': True,
         }
         logger.debug(f"yt-dlp download options: {ydl_opts_download}")
 
         with NoSaveCookiesYDL(ydl_opts_download) as ydl_download:
-            # Set a 25-second timeout for the download operation
             signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(25)
+            signal.alarm(10)  # 10-second timeout for download
             try:
                 ydl_download.download([url])
                 signal.alarm(0)  # Disable the alarm
                 logger.info(f"Downloaded audio to: {original_file_path}")
             except TimeoutException as e:
-                signal.alarm(0)  # Disable the alarm
+                signal.alarm(0)
                 logger.error(f"Download timed out: {str(e)}")
                 return {"error": "Download took too long and timed out. Please try a shorter video or try again later."}
 
@@ -135,7 +146,7 @@ def download_audio_from_youtube(url):
         # If format is not available, log available formats for debugging
         if "requested format is not available" in error_msg.lower():
             try:
-                with NoSaveCookiesYDL({'listformats': True, 'cookiefile': COOKIES_FILE, 'user_agent': user_agent}) as ydl:
+                with NoSaveCookiesYDL({'listformats': True, 'cookiefile': COOKIES_FILE, 'user_agent': user_agent, 'no-cache-dir': True}) as ydl:
                     info = ydl.extract_info(url, download=False)
                     formats = info.get('formats', [])
                     logger.debug(f"Available formats: {formats}")
@@ -145,7 +156,7 @@ def download_audio_from_youtube(url):
         if "http error 403" in error_msg.lower():
             # Try fetching info without cookies to check for broader access issues
             try:
-                with NoSaveCookiesYDL({'quiet': True, 'user_agent': user_agent}) as ydl:
+                with NoSaveCookiesYDL({'quiet': True, 'user_agent': user_agent, 'no-cache-dir': True}) as ydl:
                     info = ydl.extract_info(url, download=False)
                     logger.debug("Video is accessible without cookies, indicating a cookies issue.")
                     return {"error": "Access denied (HTTP 403). The provided cookies may be invalid or expired."}
@@ -269,7 +280,8 @@ def get_info():
             'quiet': True,
             'cookiefile': COOKIES_FILE,
             'user_agent': user_agent,
-            'socket_timeout': 15,
+            'socket_timeout': 10,
+            'no-cache-dir': True,
         }
         with NoSaveCookiesYDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
