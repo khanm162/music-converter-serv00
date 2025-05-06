@@ -1,7 +1,7 @@
 import uuid
 import os
 import shutil
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 import yt_dlp
 from pydub import AudioSegment
@@ -65,7 +65,7 @@ def convert_audio():
 
     finally:
         # Clean up
-        if os.path.exists(input_file):
+        if 'input_file' in locals() and os.path.exists(input_file):
             os.remove(input_file)
 
 @app.route('/output/<filename>')
