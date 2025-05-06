@@ -25,7 +25,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 port = int(os.getenv("PORT", 8080))
 
 # Path to the cookies file on Render
-COOKIES_FILE = "/app/youtube_cookies.txt"
+COOKIES_FILE = "/etc/secrets/youtube_cookies.txt"
 
 def validate_youtube_url(url):
     youtube_regex = r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$'
