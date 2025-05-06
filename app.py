@@ -82,10 +82,12 @@ def download_audio_from_youtube(url):
 
         # Step 2: Download audio
         proxy_url = os.getenv("PROXY_URL")
+        if not proxy_url:
+            logger.warning("PROXY_URL environment variable not set. This may lead to download issues.")
         ydl_opts_download = {
             'cookiefile': COOKIES_FILE,
             'user_agent': user_agent,
-            'format': 'bestaudio/best',  # Changed to be more flexible
+            'format': 'bestaudio/best',
             'outtmpl': f"{original_file_base}.%(ext)s",
             'quiet': True,
             'postprocessors': [{
@@ -127,6 +129,17 @@ def download_audio_from_youtube(url):
                     logger.debug(f"Available formats: {formats}")
             except Exception as fmt_error:
                 logger.error(f"Failed to list formats: {str(fmt_error)}")
+        # Handle HTTP 403 Forbidden specifically
+        if "http error 403" in error_msg.lower():
+            # Try fetching info without cookies to check for broader access issues
+            try:
+                with NoSaveCookiesYDL({'quiet': True, 'user_agent': user_agent}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    logger.debug("Video is accessible without cookies, indicating a cookies issue.")
+                    return {"error": "Access denied (HTTP 403). The provided cookies may be invalid or expired."}
+            except Exception as no_cookies_error:
+                logger.debug(f"Video access failed without cookies: {str(no_cookies_error)}")
+                return {"error": "Access denied (HTTP 403). The video may be restricted (e.g., region-locked or age-restricted)."}
         if "sign in to confirm" in error_msg.lower() or "bot" in error_msg.lower():
             return {"error": "This video cannot be downloaded. YouTube requires authentication to access it, and the provided cookies may be invalid or expired."}
         if "player response" in error_msg.lower():
