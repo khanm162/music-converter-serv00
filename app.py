@@ -24,7 +24,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 # Use the PORT environment variable for Render
 port = int(os.getenv("PORT", 8080))
 
-# Path to the cookies file on Render
+# Path to the cookies file on Render (corrected to Render's secret files path)
 COOKIES_FILE = "/etc/secrets/youtube_cookies.txt"
 
 def validate_youtube_url(url):
