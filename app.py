@@ -16,13 +16,13 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # yt-dlp options to download audio with cookies
 ydl_opts = {
-    'format': 'bestaudio/best',  # Prioritize best audio format
+    'format': 'bestaudio/best',
     'outtmpl': os.path.join(UPLOAD_FOLDER, '%(id)s.%(ext)s'),
     'cookiefile': 'youtube_cookies.txt',
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'mp3',
-        'preferredquality': '128',  # Reduce quality to speed up conversion
+        'preferredquality': '96',  # Lower quality to reduce memory usage
     }],
     'socket_timeout': 30,
     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -30,15 +30,17 @@ ydl_opts = {
     'quiet': False,
     'no_warnings': False,
     'ignoreerrors': False,
-    'format_sort': ['hasaud'],  # Updated to use hasaud as per warning
+    'format_sort': ['hasaud'],
+    'ffmpeg_args': ['-bufsize', '500k'],  # Limit ffmpeg buffer size to reduce memory usage
 }
 
 def convert_to_432hz(input_path, output_path):
-    audio = AudioSegment.from_file(input_path)
+    # Use pydub with low memory mode
+    audio = AudioSegment.from_file(input_path, format="mp3")
     sample_rate = audio.frame_rate
     target_rate = int(sample_rate * (432 / 440))
     audio = audio.set_frame_rate(target_rate)
-    audio.export(output_path, format="mp3")
+    audio.export(output_path, format="mp3", bitrate="96k")  # Lower bitrate to reduce memory usage
 
 @app.route('/api/convert', methods=['POST'])
 def convert_audio():
