@@ -16,21 +16,21 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # yt-dlp options to download audio with cookies
 ydl_opts = {
-    'format': 'bestaudio/best',  # Try bestaudio, fallback if needed
+    'format': 'bestaudio/best',  # Prioritize best audio format
     'outtmpl': os.path.join(UPLOAD_FOLDER, '%(id)s.%(ext)s'),
     'cookiefile': 'youtube_cookies.txt',
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'mp3',
-        'preferredquality': '192',
+        'preferredquality': '128',  # Reduce quality to speed up conversion
     }],
     'socket_timeout': 30,
     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'retries': 5,  # Increase retries
-    'quiet': False,  # Enable verbose output for debugging
+    'retries': 5,
+    'quiet': False,
     'no_warnings': False,
     'ignoreerrors': False,
-    'format_sort': ['audio'],  # Prioritize audio formats
+    'format_sort': ['hasaud'],  # Updated to use hasaud as per warning
 }
 
 def convert_to_432hz(input_path, output_path):
