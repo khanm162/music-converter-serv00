@@ -21,7 +21,7 @@ CORS(app, resources={r"/api/*": {"origins": "https://hqffhk-1j.myshopify.com"}})
 # Configure upload and output directories
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'output'
-DEBUG_FOLDER = 'debug'  # Folder to store debug files
+DEBUG_FOLDER = 'debug'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(DEBUG_FOLDER, exist_ok=True)
@@ -50,7 +50,7 @@ def sanitize_filename(filename):
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         filename = filename.replace(char, '')
-    filename = filename.replace(' ', '_').replace('|', '')  # Remove pipes
+    filename = filename.replace(' ', '_').replace('|', '')
     return filename
 
 def download_thumbnail(thumbnail_url, output_path):
@@ -60,19 +60,21 @@ def download_thumbnail(thumbnail_url, output_path):
         if response.status_code == 200:
             with open(output_path, 'wb') as f:
                 shutil.copyfileobj(response.raw, f)
+            mime_type = response.headers.get('content-type', 'image/jpeg')
+            logger.debug(f"Thumbnail MIME type: {mime_type}")
             logger.debug(f"Thumbnail downloaded to {output_path}, size: {os.path.getsize(output_path)} bytes")
-            return True
+            return True, mime_type
         else:
             logger.error(f"Failed to download thumbnail, status code: {response.status_code}")
-            return False
+            return False, None
     except Exception as e:
         logger.error(f"Error downloading thumbnail: {e}")
-        return False
+        return False, None
 
-def embed_thumbnail_in_mp3(mp3_path, thumbnail_path):
+def embed_thumbnail_in_mp3(mp3_path, thumbnail_path, mime_type='image/jpeg'):
     logger.debug(f"Embedding thumbnail into MP3: {mp3_path}")
     try:
-        # Save a copy of the MP3 before embedding for debugging
+        # Save a copy of the MP3 before embedding
         debug_pre_path = os.path.join(DEBUG_FOLDER, f"pre_embed_{os.path.basename(mp3_path)}")
         shutil.copyfile(mp3_path, debug_pre_path)
         logger.debug(f"Saved pre-embed MP3 copy to {debug_pre_path}")
@@ -87,40 +89,44 @@ def embed_thumbnail_in_mp3(mp3_path, thumbnail_path):
         except ID3NoHeaderError:
             logger.debug("No ID3 tags found, adding new tags")
             tags = ID3()
-        tags.version = (2, 3, 0)  # Force ID3v2.3
+        tags.version = (2, 3, 0)
 
         # Embed the thumbnail
         with open(thumbnail_path, 'rb') as f:
             image_data = f.read()
+        tags.setall('APIC', [])  # Clear any existing APIC tags
         tags.add(
             APIC(
                 encoding=3,
-                mime='image/jpeg',
+                mime=mime_type,
                 type=3,
                 desc='Cover',
                 data=image_data
             )
         )
-        tags.save(mp3_path, v1=2, v2_version=3)  # Save as ID3v2.3, include ID3v1
+        tags.save(mp3_path, v1=2, v2_version=3)
         logger.debug("Thumbnail embedded successfully")
 
         # Verify the MP3 file after embedding
         audio = MP3(mp3_path)
         logger.debug(f"MP3 duration after embedding: {audio.info.length} seconds")
 
-        # Verify the album art is present
+        # Verify the album art
         tags = ID3(mp3_path)
-        has_apic = any(isinstance(frame, APIC) for frame in tags.values())
-        logger.debug(f"Album art (APIC) present after embedding: {has_apic}")
-        if not has_apic:
-            logger.error("Failed to embed album art: APIC tag not found after embedding")
+        apic_frames = [frame for frame in tags.values() if isinstance(frame, APIC)]
+        logger.debug(f"Number of APIC frames after embedding: {len(apic_frames)}")
+        if apic_frames:
+            for i, frame in enumerate(apic_frames):
+                logger.debug(f"APIC frame {i}: mime={frame.mime}, type={frame.type}, desc={frame.desc}, data size={len(frame.data)} bytes")
+        else:
+            logger.error("Failed to embed album art: No APIC frames found after embedding")
 
-        # Save a copy of the MP3 after embedding for debugging
+        # Save a copy of the MP3 after embedding
         debug_post_path = os.path.join(DEBUG_FOLDER, f"post_embed_{os.path.basename(mp3_path)}")
         shutil.copyfile(mp3_path, debug_post_path)
         logger.debug(f"Saved post-embed MP3 copy to {debug_post_path}")
 
-        return True
+        return len(apic_frames) > 0
     except Exception as e:
         logger.error(f"Failed to embed thumbnail: {e}")
         return False
@@ -165,19 +171,25 @@ def convert_audio():
             logger.debug(f"yt-dlp extracted info - title: {video_title}, thumbnail: {thumbnail_url}")
             logger.debug(f"Input file size after yt-dlp: {os.path.getsize(input_file)} bytes")
 
-        # Convert to 432Hz
-        output_audio_filename = f"{uuid.uuid4()}.mp3"
-        output_audio_path = os.path.join(OUTPUT_FOLDER, output_audio_filename)
-        convert_to_432hz(input_file, output_audio_path)
+        # Create a temporary file for embedding
+        temp_audio_filename = f"temp_{uuid.uuid4()}.mp3"
+        temp_audio_path = os.path.join(OUTPUT_FOLDER, temp_audio_filename)
+        shutil.copyfile(input_file, temp_audio_path)
 
         # Download thumbnail and embed it into the MP3
         if thumbnail_url:
             thumbnail_filename = f"{uuid.uuid4()}.jpg"
             thumbnail_path = os.path.join(OUTPUT_FOLDER, thumbnail_filename)
-            if download_thumbnail(thumbnail_url, thumbnail_path):
-                embed_thumbnail_in_mp3(output_audio_path, thumbnail_path)
+            success, mime_type = download_thumbnail(thumbnail_url, thumbnail_path)
+            if success:
+                embed_thumbnail_in_mp3(temp_audio_path, thumbnail_path, mime_type)
             else:
                 logger.warning("Thumbnail download failed, skipping embedding")
+
+        # Convert to 432Hz
+        output_audio_filename = f"{uuid.uuid4()}.mp3"
+        output_audio_path = os.path.join(OUTPUT_FOLDER, output_audio_filename)
+        convert_to_432hz(temp_audio_path, output_audio_path)
 
         # Generate download URL
         audio_download_url = f"https://{request.host}/output/{output_audio_filename}"
@@ -202,12 +214,24 @@ def convert_audio():
         if 'thumbnail_path' in locals() and os.path.exists(thumbnail_path):
             logger.debug(f"Cleaning up thumbnail file: {thumbnail_path}")
             os.remove(thumbnail_path)
+        if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
+            logger.debug(f"Cleaning up temp file: {temp_audio_path}")
+            os.remove(temp_audio_path)
 
 @app.route('/output/<filename>')
 def serve_file(filename):
     file_path = os.path.join(OUTPUT_FOLDER, filename)
     logger.debug(f"Serving file: {file_path}, size: {os.path.getsize(file_path)} bytes")
     response = make_response(send_from_directory(OUTPUT_FOLDER, filename))
+    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    response.headers['Access-Control-Allow-Origin'] = 'https://hqffhk-1j.myshopify.com'
+    return response
+
+@app.route('/debug/<filename>')
+def serve_debug_file(filename):
+    file_path = os.path.join(DEBUG_FOLDER, filename)
+    logger.debug(f"Serving debug file: {file_path}, size: {os.path.getsize(file_path)} bytes")
+    response = make_response(send_from_directory(DEBUG_FOLDER, filename))
     response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     response.headers['Access-Control-Allow-Origin'] = 'https://hqffhk-1j.myshopify.com'
     return response
