@@ -1,19 +1,18 @@
-# Use an official Python runtime as the base image 
-FROM python:3.10-slim 
- 
-# Install FFmpeg and other dependencies 
- 
-# Set the working directory in the container 
-WORKDIR /app 
- 
-# Copy the project files into the container 
-COPY . . 
- 
-# Install Python dependencies 
-RUN pip install --no-cache-dir -r requirements.txt 
- 
-# Expose the port your app runs on (Fly.io will override this if needed) 
-EXPOSE 8080 
- 
-# Command to run your app using Gunicorn (as specified in your Procfile) 
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8080"] 
+# Use an official Python runtime as the base image
+FROM python:3.9-slim
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN apt-get update && apt-get install -y ffmpeg && pip install --no-cache-dir -r requirements.txt
+
+# Copy the app code
+COPY . .
+
+# Expose the port
+EXPOSE 8080
+
+# Run the app
+CMD ["python", "app.py"]
