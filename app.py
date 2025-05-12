@@ -1,14 +1,14 @@
 import uuid
 import os
 import shutil
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, make_response
 from werkzeug.utils import secure_filename
 import yt_dlp
 from pydub import AudioSegment
-from flask_cors import CORS  # Import Flask-Cors
+from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "https://hqffhk-1j.myshopify.com"}})  # Allow Shopify domain
+CORS(app, resources={r"/api/*": {"origins": "https://hqffhk-1j.myshopify.com"}})
 
 # Configure upload and output directories
 UPLOAD_FOLDER = 'uploads'
@@ -80,7 +80,10 @@ def convert_audio():
 
 @app.route('/output/<filename>')
 def serve_file(filename):
-    return send_from_directory(OUTPUT_FOLDER, filename)
+    # Serve the file with Content-Disposition: attachment to force download
+    response = make_response(send_from_directory(OUTPUT_FOLDER, filename))
+    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
