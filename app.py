@@ -9,7 +9,7 @@ import yt_dlp
 from pydub import AudioSegment
 from flask_cors import CORS
 from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, APIC, error
+from mutagen.id3 import ID3, APIC, error, ID3NoHeaderError
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -69,12 +69,23 @@ def download_thumbnail(thumbnail_url, output_path):
 def embed_thumbnail_in_mp3(mp3_path, thumbnail_path):
     logger.debug(f"Embedding thumbnail into MP3: {mp3_path}")
     try:
-        audio = MP3(mp3_path, ID3=ID3)
-        if audio.tags is None:
-            audio.add_tags()
+        # Load the MP3 file
+        audio = MP3(mp3_path)
+        # Check if the MP3 file is valid by accessing its length
+        logger.debug(f"MP3 duration before embedding: {audio.info.length} seconds")
+
+        # Initialize ID3 tags with v2.3 for compatibility
+        try:
+            tags = ID3(mp3_path)
+        except ID3NoHeaderError:
+            logger.debug("No ID3 tags found, adding new tags")
+            tags = ID3()
+        tags.version = (2, 3, 0)  # Force ID3v2.3
+
+        # Embed the thumbnail
         with open(thumbnail_path, 'rb') as f:
             image_data = f.read()
-        audio.tags.add(
+        tags.add(
             APIC(
                 encoding=3,
                 mime='image/jpeg',
@@ -83,8 +94,12 @@ def embed_thumbnail_in_mp3(mp3_path, thumbnail_path):
                 data=image_data
             )
         )
-        audio.save()
+        tags.save(mp3_path, v1=2, v2_version=3)  # Save as ID3v2.3, include ID3v1 for compatibility
         logger.debug("Thumbnail embedded successfully")
+
+        # Verify the MP3 file is still valid after embedding
+        audio = MP3(mp3_path)
+        logger.debug(f"MP3 duration after embedding: {audio.info.length} seconds")
         return True
     except Exception as e:
         logger.error(f"Failed to embed thumbnail: {e}")
@@ -93,12 +108,18 @@ def embed_thumbnail_in_mp3(mp3_path, thumbnail_path):
 def convert_to_432hz(input_path, output_path):
     logger.debug(f"Converting audio to 432Hz: {input_path} -> {output_path}")
     try:
+        if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
+            logger.error("Input file is empty or does not exist")
+            raise Exception("Input file is invalid")
         audio = AudioSegment.from_file(input_path, format="mp3")
         logger.debug(f"Input audio loaded, duration: {audio.duration_seconds} seconds")
         sample_rate = audio.frame_rate
         target_rate = int(sample_rate * (432 / 440))
         audio = audio.set_frame_rate(target_rate)
         audio.export(output_path, format="mp3", bitrate="96k")
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            logger.error("Output file is empty after conversion")
+            raise Exception("Failed to export converted audio")
         logger.debug(f"Audio converted, output size: {os.path.getsize(output_path)} bytes")
     except Exception as e:
         logger.error(f"Error during 432Hz conversion: {e}")
