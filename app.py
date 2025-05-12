@@ -2,6 +2,7 @@ import uuid
 import os
 import shutil
 import requests
+import logging
 from flask import Flask, request, jsonify, send_from_directory, make_response
 from werkzeug.utils import secure_filename
 import yt_dlp
@@ -9,6 +10,10 @@ from pydub import AudioSegment
 from flask_cors import CORS
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC, error
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "https://hqffhk-1j.myshopify.com"}})
@@ -40,56 +45,64 @@ ydl_opts = {
 }
 
 def sanitize_filename(filename):
-    # Remove invalid characters for filenames
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         filename = filename.replace(char, '')
     return filename.replace(' ', '_')
 
 def download_thumbnail(thumbnail_url, output_path):
-    response = requests.get(thumbnail_url, stream=True)
-    if response.status_code == 200:
-        with open(output_path, 'wb') as f:
-            shutil.copyfileobj(response.raw, f)
-    return response.status_code == 200
+    logger.debug(f"Downloading thumbnail from: {thumbnail_url}")
+    try:
+        response = requests.get(thumbnail_url, stream=True)
+        if response.status_code == 200:
+            with open(output_path, 'wb') as f:
+                shutil.copyfileobj(response.raw, f)
+            logger.debug(f"Thumbnail downloaded to {output_path}, size: {os.path.getsize(output_path)} bytes")
+            return True
+        else:
+            logger.error(f"Failed to download thumbnail, status code: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"Error downloading thumbnail: {e}")
+        return False
 
 def embed_thumbnail_in_mp3(mp3_path, thumbnail_path):
+    logger.debug(f"Embedding thumbnail into MP3: {mp3_path}")
     try:
-        # Load the MP3 file
         audio = MP3(mp3_path, ID3=ID3)
-        
-        # Add ID3 tag if it doesn't exist
         if audio.tags is None:
             audio.add_tags()
-        
-        # Read the thumbnail image
         with open(thumbnail_path, 'rb') as f:
             image_data = f.read()
-        
-        # Embed the thumbnail as album art (APIC tag)
         audio.tags.add(
             APIC(
-                encoding=3,  # UTF-8
+                encoding=3,
                 mime='image/jpeg',
-                type=3,  # Cover (front)
+                type=3,
                 desc='Cover',
                 data=image_data
             )
         )
-        
-        # Save the changes
         audio.save()
+        logger.debug("Thumbnail embedded successfully")
         return True
     except Exception as e:
-        print(f"Failed to embed thumbnail: {e}")
+        logger.error(f"Failed to embed thumbnail: {e}")
         return False
 
 def convert_to_432hz(input_path, output_path):
-    audio = AudioSegment.from_file(input_path, format="mp3")
-    sample_rate = audio.frame_rate
-    target_rate = int(sample_rate * (432 / 440))
-    audio = audio.set_frame_rate(target_rate)
-    audio.export(output_path, format="mp3", bitrate="96k")
+    logger.debug(f"Converting audio to 432Hz: {input_path} -> {output_path}")
+    try:
+        audio = AudioSegment.from_file(input_path, format="mp3")
+        logger.debug(f"Input audio loaded, duration: {audio.duration_seconds} seconds")
+        sample_rate = audio.frame_rate
+        target_rate = int(sample_rate * (432 / 440))
+        audio = audio.set_frame_rate(target_rate)
+        audio.export(output_path, format="mp3", bitrate="96k")
+        logger.debug(f"Audio converted, output size: {os.path.getsize(output_path)} bytes")
+    except Exception as e:
+        logger.error(f"Error during 432Hz conversion: {e}")
+        raise
 
 @app.route('/api/convert', methods=['POST'])
 def convert_audio():
@@ -98,6 +111,7 @@ def convert_audio():
         return jsonify({"error": "Missing youtubeUrl in request"}), 400
 
     youtube_url = data['youtubeUrl']
+    logger.debug(f"Received request to convert: {youtube_url}")
     try:
         # Download audio and extract metadata using yt-dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -107,6 +121,8 @@ def convert_audio():
             sanitized_title = sanitize_filename(video_title)
             input_file = os.path.join(UPLOAD_FOLDER, f"{video_id}.mp3")
             thumbnail_url = info.get('thumbnail', '')
+            logger.debug(f"yt-dlp extracted info - title: {video_title}, thumbnail: {thumbnail_url}")
+            logger.debug(f"Input file size after yt-dlp: {os.path.getsize(input_file)} bytes")
 
         # Convert to 432Hz
         output_audio_filename = f"{uuid.uuid4()}.mp3"
@@ -119,9 +135,12 @@ def convert_audio():
             thumbnail_path = os.path.join(OUTPUT_FOLDER, thumbnail_filename)
             if download_thumbnail(thumbnail_url, thumbnail_path):
                 embed_thumbnail_in_mp3(output_audio_path, thumbnail_path)
+            else:
+                logger.warning("Thumbnail download failed, skipping embedding")
 
         # Generate download URL
         audio_download_url = f"https://{request.host}/output/{output_audio_filename}"
+        logger.debug(f"Generated audio download URL: {audio_download_url}")
 
         return jsonify({
             "audioUrl": audio_download_url,
@@ -131,17 +150,22 @@ def convert_audio():
         }), 200
 
     except Exception as e:
+        logger.error(f"Error in convert_audio: {e}")
         return jsonify({"error": str(e)}), 500
 
     finally:
         # Clean up
         if 'input_file' in locals() and os.path.exists(input_file):
+            logger.debug(f"Cleaning up input file: {input_file}")
             os.remove(input_file)
         if 'thumbnail_path' in locals() and os.path.exists(thumbnail_path):
+            logger.debug(f"Cleaning up thumbnail file: {thumbnail_path}")
             os.remove(thumbnail_path)
 
 @app.route('/output/<filename>')
 def serve_file(filename):
+    file_path = os.path.join(OUTPUT_FOLDER, filename)
+    logger.debug(f"Serving file: {file_path}, size: {os.path.getsize(file_path)} bytes")
     response = make_response(send_from_directory(OUTPUT_FOLDER, filename))
     response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     response.headers['Access-Control-Allow-Origin'] = 'https://hqffhk-1j.myshopify.com'
