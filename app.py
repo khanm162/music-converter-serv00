@@ -5,8 +5,10 @@ from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 import yt_dlp
 from pydub import AudioSegment
+from flask_cors import CORS  # Import Flask-Cors
 
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "https://hqffhk-1j.myshopify.com"}})  # Allow Shopify domain
 
 # Configure upload and output directories
 UPLOAD_FOLDER = 'uploads'
@@ -22,7 +24,7 @@ ydl_opts = {
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'mp3',
-        'preferredquality': '96',  # Lower quality to reduce memory usage
+        'preferredquality': '96',
     }],
     'socket_timeout': 30,
     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -31,16 +33,15 @@ ydl_opts = {
     'no_warnings': False,
     'ignoreerrors': False,
     'format_sort': ['hasaud'],
-    'ffmpeg_args': ['-bufsize', '500k'],  # Limit ffmpeg buffer size to reduce memory usage
+    'ffmpeg_args': ['-bufsize', '500k'],
 }
 
 def convert_to_432hz(input_path, output_path):
-    # Use pydub with low memory mode
     audio = AudioSegment.from_file(input_path, format="mp3")
     sample_rate = audio.frame_rate
     target_rate = int(sample_rate * (432 / 440))
     audio = audio.set_frame_rate(target_rate)
-    audio.export(output_path, format="mp3", bitrate="96k")  # Lower bitrate to reduce memory usage
+    audio.export(output_path, format="mp3", bitrate="96k")
 
 @app.route('/api/convert', methods=['POST'])
 def convert_audio():
