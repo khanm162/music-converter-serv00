@@ -21,8 +21,10 @@ CORS(app, resources={r"/api/*": {"origins": "https://hqffhk-1j.myshopify.com"}})
 # Configure upload and output directories
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'output'
+DEBUG_FOLDER = 'debug'  # Folder to store debug files
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(DEBUG_FOLDER, exist_ok=True)
 
 # yt-dlp options to download audio with cookies
 ydl_opts = {
@@ -48,7 +50,8 @@ def sanitize_filename(filename):
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         filename = filename.replace(char, '')
-    return filename.replace(' ', '_')
+    filename = filename.replace(' ', '_').replace('|', '')  # Remove pipes
+    return filename
 
 def download_thumbnail(thumbnail_url, output_path):
     logger.debug(f"Downloading thumbnail from: {thumbnail_url}")
@@ -69,9 +72,13 @@ def download_thumbnail(thumbnail_url, output_path):
 def embed_thumbnail_in_mp3(mp3_path, thumbnail_path):
     logger.debug(f"Embedding thumbnail into MP3: {mp3_path}")
     try:
+        # Save a copy of the MP3 before embedding for debugging
+        debug_pre_path = os.path.join(DEBUG_FOLDER, f"pre_embed_{os.path.basename(mp3_path)}")
+        shutil.copyfile(mp3_path, debug_pre_path)
+        logger.debug(f"Saved pre-embed MP3 copy to {debug_pre_path}")
+
         # Load the MP3 file
         audio = MP3(mp3_path)
-        # Check if the MP3 file is valid by accessing its length
         logger.debug(f"MP3 duration before embedding: {audio.info.length} seconds")
 
         # Initialize ID3 tags with v2.3 for compatibility
@@ -94,12 +101,25 @@ def embed_thumbnail_in_mp3(mp3_path, thumbnail_path):
                 data=image_data
             )
         )
-        tags.save(mp3_path, v1=2, v2_version=3)  # Save as ID3v2.3, include ID3v1 for compatibility
+        tags.save(mp3_path, v1=2, v2_version=3)  # Save as ID3v2.3, include ID3v1
         logger.debug("Thumbnail embedded successfully")
 
-        # Verify the MP3 file is still valid after embedding
+        # Verify the MP3 file after embedding
         audio = MP3(mp3_path)
         logger.debug(f"MP3 duration after embedding: {audio.info.length} seconds")
+
+        # Verify the album art is present
+        tags = ID3(mp3_path)
+        has_apic = any(isinstance(frame, APIC) for frame in tags.values())
+        logger.debug(f"Album art (APIC) present after embedding: {has_apic}")
+        if not has_apic:
+            logger.error("Failed to embed album art: APIC tag not found after embedding")
+
+        # Save a copy of the MP3 after embedding for debugging
+        debug_post_path = os.path.join(DEBUG_FOLDER, f"post_embed_{os.path.basename(mp3_path)}")
+        shutil.copyfile(mp3_path, debug_post_path)
+        logger.debug(f"Saved post-embed MP3 copy to {debug_post_path}")
+
         return True
     except Exception as e:
         logger.error(f"Failed to embed thumbnail: {e}")
